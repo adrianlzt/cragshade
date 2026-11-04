@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS photos (
     orientation_residual_deg REAL,
     compass_accuracy_deg REAL,
     pano_data TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
     file TEXT NOT NULL,
     web_file TEXT NOT NULL,
     thumb_file TEXT NOT NULL,
@@ -42,4 +43,7 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+    if "size_bytes" not in cols:
+        conn.execute("ALTER TABLE photos ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0")
     return conn

@@ -68,3 +68,13 @@ def test_accepts_partial_pano_with_pano_data(client):
 
 def test_rejects_garbage(client):
     assert upload(client, b"not an image").status_code == 422
+
+
+def test_quota(client, monkeypatch):
+    from app import main
+
+    assert upload(client, jpeg(2000, 1000)).status_code == 201
+    used = client.get("/api/health").json()["used_bytes"]
+    assert used > 0
+    monkeypatch.setattr(main, "QUOTA_BYTES", used)
+    assert upload(client, jpeg(2000, 1000)).status_code == 507

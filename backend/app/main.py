@@ -24,6 +24,13 @@ MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 ALLOW_DELETE = os.environ.get("CRAGSHADE_ALLOW_DELETE") == "1"
 # El original (5–15 MB) no lo usa la app; solo sirve para regenerar la versión web en el futuro.
 KEEP_ORIGINAL = os.environ.get("CRAGSHADE_KEEP_ORIGINAL") == "1"
+# Tope de espacio de las fotos, por debajo de los 10 GB gratis de R2 (deja sitio a las copias de Litestream).
+QUOTA_BYTES = int(os.environ.get("CRAGSHADE_QUOTA_BYTES", 8 * 1024**3))
+
+
+def used_bytes() -> int:
+    with db.connect() as conn:
+        return conn.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM photos").fetchone()[0]
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 LIST_FIELDS = "id, alias, wall_name, lat, lon, heading_true, orientation_method, thumb_file, captured_at"
@@ -42,9 +49,7 @@ def to_dict(row) -> dict:
 
 @app.get("/api/health")
 def health():
-    with db.connect() as conn:
-        conn.execute("SELECT 1")
-    return {"ok": True}
+    return {"ok": True, "used_bytes": used_bytes(), "quota_bytes": QUOTA_BYTES}
 
 
 @app.get("/api/photos")
@@ -92,6 +97,9 @@ def create_photo(
         except ValueError:
             raise HTTPException(422, "pano_data no es JSON válido")
 
+    if used_bytes() >= QUOTA_BYTES:
+        raise HTTPException(507, "Se ha llenado el espacio de fotos; no se admiten más subidas por ahora")
+
     photo_id = uuid.uuid4().hex
     keys = {
         "file": f"{photo_id}/original.jpg" if KEEP_ORIGINAL else "",
@@ -113,6 +121,7 @@ def create_photo(
             raise HTTPException(422, "El fichero no es una imagen válida")
         if not pano_data and abs(width / height - 2) > 0.05:
             raise HTTPException(422, "La imagen no parece una panorámica equirectangular (2:1)")
+        stored = web.stat().st_size + thumb.stat().st_size + (orig.stat().st_size if KEEP_ORIGINAL else 0)
         storage.put(keys["web_file"], web, "image/jpeg")
         storage.put(keys["thumb_file"], thumb, "image/jpeg")
         if KEEP_ORIGINAL:
@@ -133,6 +142,7 @@ def create_photo(
         "compass_accuracy_deg": compass_accuracy_deg,
         "pano_data": pano_data,
         **keys,
+        "size_bytes": stored,
         "created_at": datetime.now(UTC).isoformat(),
     }
     with db.connect() as conn:
