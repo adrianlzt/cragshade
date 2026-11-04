@@ -73,16 +73,13 @@ Litestream replica la SQLite al mismo bucket (`litestream/`). Al arrancar en un 
 restaura la base de datos. Sin `CRAGSHADE_S3_BUCKET` la app guarda en disco (desarrollo).
 El original solo se guarda con `CRAGSHADE_KEEP_ORIGINAL=1`.
 
-- Bucket `cragshade` con dominio público `cragshade-media.adrianlzt.com` y esta política CORS (el visor carga la
-  panorámica como textura WebGL, que exige CORS):
-  ```json
-  [{"AllowedOrigins": ["https://cragshade.k8s.adrianlzt.com", "https://localhost:5173"],
-    "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 86400}]
-  ```
-- Token R2 "Object Read & Write" limitado al bucket, en gopass `cragshade/r2`. Secret:
-  ```sh
-  KUBE_ADMIN=1 kubectl --context oracle-frankfurt-nixos-ts -n cragshade create secret generic cragshade-s3 \
-    --from-literal=AWS_ACCESS_KEY_ID=… --from-literal=AWS_SECRET_ACCESS_KEY=… \
-    --from-literal=CRAGSHADE_S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com \
-    --from-literal=CRAGSHADE_S3_BUCKET=cragshade --from-literal=CRAGSHADE_MEDIA_URL=https://cragshade-media.adrianlzt.com
-  ```
+- Bucket `cragshade` (WEUR) con dominio público `cragshade-media.adrianlzt.com` y CORS para
+  `https://cragshade.k8s.adrianlzt.com` y `https://localhost:5173` (el visor carga la panorámica como textura WebGL,
+  que exige CORS). Creado por API de Cloudflare.
+- Token de la app: `cragshade-app`, solo lectura/escritura de objetos del bucket. En gopass `cragshade/r2`
+  (1.ª línea = secret S3; campos `access_key_id`, `endpoint`, `bucket`, `media_url`, `cf_token`). Está en el Secret
+  `cragshade-s3` del namespace.
+- Para no pasar del plan gratis: tope de 8 GiB en la app (`CRAGSHADE_QUOTA_BYTES`, uso en `/api/health`) y alerta de
+  presupuesto de Cloudflare (`billing_budget_alert`, 0,01 USD) por email.
+- Restaurar la copia en local:
+  `litestream restore -o out.db "s3://cragshade/litestream/cragshade.db?endpoint=<endpoint>&region=auto"`
