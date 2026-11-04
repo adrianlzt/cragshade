@@ -1,0 +1,113 @@
+# Despliegue en el k3s de Oracle (oracle-frankfurt-nixos-*).
+#   KUBE_ADMIN=1 kubectl --context oracle-frankfurt-nixos-ts apply -f deploy/k8s.yaml
+# Nueva versión: KUBE_ADMIN=1 kubectl ... -n cragshade set image deploy/cragshade app=ghcr.io/adrianlzt/cragshade:<sha>
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cragshade
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cragshade-data
+  namespace: cragshade
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cragshade
+  namespace: cragshade
+spec:
+  replicas: 1
+  # SQLite + volumen RWO: nunca dos pods a la vez.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: cragshade
+  template:
+    metadata:
+      labels:
+        app: cragshade
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: app
+          image: ghcr.io/adrianlzt/cragshade:main
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CRAGSHADE_DATA
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              # Pillow descomprime panorámicas grandes en memoria.
+              memory: 768Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cragshade-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cragshade
+  namespace: cragshade
+spec:
+  selector:
+    app: cragshade
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cragshade
+  namespace: cragshade
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: cragshade.k8s.adrianlzt.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cragshade
+                port:
+                  number: 80
+  tls:
+    - hosts: [cragshade.k8s.adrianlzt.com]

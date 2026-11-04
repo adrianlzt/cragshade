@@ -1,0 +1,10 @@
+{
+  "name": "CragShade",
+  "short_name": "CragShade",
+  "description": "Sol y sombra en paredes de escalada",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1d2a36",
+  "theme_color": "#1d2a36",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
