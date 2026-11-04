@@ -20,7 +20,7 @@ export interface Photo extends PhotoSummary {
   orientation_residual_deg: number | null
   compass_accuracy_deg: number | null
   pano_data: PanoData | null
-  file_url: string
+  file_url: string | null
   web_url: string
   created_at: string
 }

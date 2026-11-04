@@ -41,6 +41,7 @@ def test_upload_get_list_delete(client):
     photo = r.json()
     assert photo["heading_true"] == 10
     assert photo["web_url"].endswith("/web.jpg")
+    assert photo["file_url"] is None  # sin CRAGSHADE_KEEP_ORIGINAL
 
     web = client.get(photo["web_url"])
     assert web.status_code == 200

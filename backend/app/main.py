@@ -1,6 +1,6 @@
 import json
 import os
-import shutil
+import tempfile
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -12,13 +12,18 @@ from PIL import UnidentifiedImageError
 
 from . import db
 from .images import make_derivatives
+from .storage import LocalStorage, from_env
 
 app = FastAPI(title="CragShade")
-app.mount("/media", StaticFiles(directory=db.media_dir()), name="media")
+storage = from_env()
+if isinstance(storage, LocalStorage):
+    app.mount("/media", StaticFiles(directory=storage.root), name="media")
 
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 # El borrado no tiene autenticación: solo para desarrollo.
 ALLOW_DELETE = os.environ.get("CRAGSHADE_ALLOW_DELETE") == "1"
+# El original (5–15 MB) no lo usa la app; solo sirve para regenerar la versión web en el futuro.
+KEEP_ORIGINAL = os.environ.get("CRAGSHADE_KEEP_ORIGINAL") == "1"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 LIST_FIELDS = "id, alias, wall_name, lat, lon, heading_true, orientation_method, thumb_file, captured_at"
@@ -30,7 +35,8 @@ def to_dict(row) -> dict:
         d["pano_data"] = json.loads(d["pano_data"])
     for key, url_key in (("file", "file_url"), ("web_file", "web_url"), ("thumb_file", "thumb_url")):
         if key in d:
-            d[url_key] = f"/media/{d.pop(key)}"
+            k = d.pop(key)
+            d[url_key] = storage.url(k) if k else None
     return d
 
 
@@ -87,26 +93,30 @@ def create_photo(
             raise HTTPException(422, "pano_data no es JSON válido")
 
     photo_id = uuid.uuid4().hex
-    folder = db.media_dir() / photo_id
-    folder.mkdir()
-    orig, web, thumb = folder / "original.jpg", folder / "web.jpg", folder / "thumb.jpg"
-    size = 0
-    with orig.open("wb") as f:
-        while chunk := image.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                f.close()
-                shutil.rmtree(folder)
-                raise HTTPException(413, f"La foto supera {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
-            f.write(chunk)
-    try:
-        width, height = make_derivatives(orig, web, thumb)
-    except (UnidentifiedImageError, OSError):
-        shutil.rmtree(folder)
-        raise HTTPException(422, "El fichero no es una imagen válida")
-    if not pano_data and abs(width / height - 2) > 0.05:
-        shutil.rmtree(folder)
-        raise HTTPException(422, "La imagen no parece una panorámica equirectangular (2:1)")
+    keys = {
+        "file": f"{photo_id}/original.jpg" if KEEP_ORIGINAL else "",
+        "web_file": f"{photo_id}/web.jpg",
+        "thumb_file": f"{photo_id}/thumb.jpg",
+    }
+    with tempfile.TemporaryDirectory(prefix="cragshade-") as tmp:
+        orig, web, thumb = Path(tmp, "original.jpg"), Path(tmp, "web.jpg"), Path(tmp, "thumb.jpg")
+        size = 0
+        with orig.open("wb") as f:
+            while chunk := image.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, f"La foto supera {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+                f.write(chunk)
+        try:
+            width, height = make_derivatives(orig, web, thumb)
+        except (UnidentifiedImageError, OSError):
+            raise HTTPException(422, "El fichero no es una imagen válida")
+        if not pano_data and abs(width / height - 2) > 0.05:
+            raise HTTPException(422, "La imagen no parece una panorámica equirectangular (2:1)")
+        storage.put(keys["web_file"], web, "image/jpeg")
+        storage.put(keys["thumb_file"], thumb, "image/jpeg")
+        if KEEP_ORIGINAL:
+            storage.put(keys["file"], orig, "image/jpeg")
 
     row = {
         "id": photo_id,
@@ -122,9 +132,7 @@ def create_photo(
         "orientation_residual_deg": orientation_residual_deg,
         "compass_accuracy_deg": compass_accuracy_deg,
         "pano_data": pano_data,
-        "file": f"{photo_id}/original.jpg",
-        "web_file": f"{photo_id}/web.jpg",
-        "thumb_file": f"{photo_id}/thumb.jpg",
+        **keys,
         "created_at": datetime.now(UTC).isoformat(),
     }
     with db.connect() as conn:
@@ -143,7 +151,7 @@ def delete_photo(photo_id: str):
         cur = conn.execute("DELETE FROM photos WHERE id = ?", [photo_id])
     if not cur.rowcount:
         raise HTTPException(404, "Foto no encontrada")
-    shutil.rmtree(db.media_dir() / photo_id, ignore_errors=True)
+    storage.delete_prefix(f"{photo_id}/")
 
 
 # Frontend compilado (make build). Va al final para no tapar /api ni /media.

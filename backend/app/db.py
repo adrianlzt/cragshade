@@ -38,5 +38,8 @@ def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DATA_DIR / "cragshade.db")
     conn.row_factory = sqlite3.Row
+    # WAL: lo necesita Litestream (copia continua al bucket) y no bloquea lecturas al escribir.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
     return conn

@@ -65,3 +65,24 @@ Se guardan el método y el error estimado, que se muestran en el visor.
 - Nueva versión: `KUBE_ADMIN=1 kubectl --context oracle-frankfurt-nixos-ts -n cragshade rollout restart deploy/cragshade`
   (la imagen `:main` se descarga con `imagePullPolicy: Always`).
 - URL: https://cragshade.k8s.adrianlzt.com
+
+### Almacenamiento (Cloudflare R2)
+
+En producción las fotos van a R2 (`media/<id>/{web,thumb}.jpg`, servidas desde el dominio público del bucket) y
+Litestream replica la SQLite al mismo bucket (`litestream/`). Al arrancar en un volumen vacío, el init container
+restaura la base de datos. Sin `CRAGSHADE_S3_BUCKET` la app guarda en disco (desarrollo).
+El original solo se guarda con `CRAGSHADE_KEEP_ORIGINAL=1`.
+
+- Bucket `cragshade` con dominio público `cragshade-media.adrianlzt.com` y esta política CORS (el visor carga la
+  panorámica como textura WebGL, que exige CORS):
+  ```json
+  [{"AllowedOrigins": ["https://cragshade.k8s.adrianlzt.com", "https://localhost:5173"],
+    "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 86400}]
+  ```
+- Token R2 "Object Read & Write" limitado al bucket, en gopass `cragshade/r2`. Secret:
+  ```sh
+  KUBE_ADMIN=1 kubectl --context oracle-frankfurt-nixos-ts -n cragshade create secret generic cragshade-s3 \
+    --from-literal=AWS_ACCESS_KEY_ID=… --from-literal=AWS_SECRET_ACCESS_KEY=… \
+    --from-literal=CRAGSHADE_S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com \
+    --from-literal=CRAGSHADE_S3_BUCKET=cragshade --from-literal=CRAGSHADE_MEDIA_URL=https://cragshade-media.adrianlzt.com
+  ```

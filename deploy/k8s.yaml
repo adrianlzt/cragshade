@@ -1,6 +1,10 @@
 # Despliegue en el k3s de Oracle (oracle-frankfurt-nixos-*).
 #   KUBE_ADMIN=1 kubectl --context oracle-frankfurt-nixos-ts apply -f deploy/k8s.yaml
-# Nueva versión: KUBE_ADMIN=1 kubectl ... -n cragshade set image deploy/cragshade app=ghcr.io/adrianlzt/cragshade:<sha>
+# Nueva versión: KUBE_ADMIN=1 kubectl ... -n cragshade rollout restart deploy/cragshade
+#
+# Fotos en Cloudflare R2 y copia continua de SQLite con Litestream al mismo bucket. Credenciales en el
+# Secret cragshade-s3 (no está en el repo; ver README): AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# CRAGSHADE_S3_ENDPOINT, CRAGSHADE_S3_BUCKET, CRAGSHADE_MEDIA_URL.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -17,6 +21,22 @@ spec:
   resources:
     requests:
       storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litestream
+  namespace: cragshade
+data:
+  litestream.yml: |
+    dbs:
+      - path: /data/cragshade.db
+        replica:
+          type: s3
+          bucket: ${CRAGSHADE_S3_BUCKET}
+          path: litestream/cragshade.db
+          endpoint: ${CRAGSHADE_S3_ENDPOINT}
+          region: auto
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -40,7 +60,39 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      initContainers:
+        # Si el volumen está vacío (nodo nuevo), recupera la base de datos del bucket.
+        - name: restore
+          image: litestream/litestream:0.5.18
+          args: [restore, -if-db-not-exists, -if-replica-exists, /data/cragshade.db]
+          envFrom:
+            - secretRef:
+                name: cragshade-s3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: litestream
+              mountPath: /etc/litestream.yml
+              subPath: litestream.yml
       containers:
+        - name: litestream
+          image: litestream/litestream:0.5.18
+          args: [replicate]
+          envFrom:
+            - secretRef:
+                name: cragshade-s3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: litestream
+              mountPath: /etc/litestream.yml
+              subPath: litestream.yml
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
         - name: app
           image: ghcr.io/adrianlzt/cragshade:main
           imagePullPolicy: Always
@@ -49,6 +101,9 @@ spec:
           env:
             - name: CRAGSHADE_DATA
               value: /data
+          envFrom:
+            - secretRef:
+                name: cragshade-s3
           volumeMounts:
             - name: data
               mountPath: /data
@@ -71,6 +126,9 @@ spec:
               # Pillow descomprime panorámicas grandes en memoria.
               memory: 768Mi
       volumes:
+        - name: litestream
+          configMap:
+            name: litestream
         - name: data
           persistentVolumeClaim:
             claimName: cragshade-data
