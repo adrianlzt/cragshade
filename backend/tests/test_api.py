@@ -55,6 +55,45 @@ def test_upload_get_list_delete(client):
     assert client.get(f"/api/photos/{photo['id']}").status_code == 404
 
 
+def upload_chunked(client, img: bytes, chunk: int) -> str:
+    up = client.post("/api/uploads").json()["upload_id"]
+    for off in range(0, len(img), chunk):
+        r = client.put(f"/api/uploads/{up}", params={"offset": off}, content=img[off : off + chunk])
+        assert r.status_code == 200
+    return up
+
+
+def test_chunked_upload_with_retry(client):
+    img = jpeg(400, 200)
+    up = client.post("/api/uploads").json()["upload_id"]
+    assert client.put(f"/api/uploads/{up}", params={"offset": 0}, content=img[:1000]).status_code == 200
+    # reintento del mismo trozo (la respuesta se perdió) y trozo con hueco
+    assert client.put(f"/api/uploads/{up}", params={"offset": 0}, content=img[:1000]).json() == {"size": 1000}
+    assert client.put(f"/api/uploads/{up}", params={"offset": 5000}, content=b"x").status_code == 409
+    assert client.put(f"/api/uploads/{up}", params={"offset": 1000}, content=img[1000:]).json() == {"size": len(img)}
+    data = {"alias": "ana", "wall_name": "Placa", "lat": "40.5", "lon": "-3.9", "heading_true": "0",
+            "orientation_method": "sun", "upload_id": up}
+    r = client.post("/api/photos", data=data)
+    assert r.status_code == 201, r.text
+    assert client.get(f"/api/photos/{r.json()['id']}").status_code == 200
+    # la subida se consume
+    assert client.post("/api/photos", data=data).status_code == 404
+
+
+def test_chunked_rejects_oversized_chunk_and_bad_id(client, monkeypatch):
+    monkeypatch.setattr("app.main.CHUNK_MAX_BYTES", 100)
+    up = client.post("/api/uploads").json()["upload_id"]
+    assert client.put(f"/api/uploads/{up}", params={"offset": 0}, content=b"x" * 101).status_code == 413
+    assert client.put("/api/uploads/../x", params={"offset": 0}, content=b"x").status_code in (404, 405)
+    assert client.put("/api/uploads/nope", params={"offset": 0}, content=b"x").status_code == 404
+
+
+def test_photo_requires_image_or_upload(client):
+    r = client.post("/api/photos", data={"alias": "a", "wall_name": "b", "lat": "1", "lon": "1",
+                                          "heading_true": "0", "orientation_method": "sun"})
+    assert r.status_code == 422
+
+
 def test_rejects_non_equirectangular(client):
     assert upload(client, jpeg(1000, 1000)).status_code == 422
 

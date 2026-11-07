@@ -18,6 +18,7 @@
   let step = $state<Step>('photo')
   let error = $state('')
   let busy = $state(false)
+  let progress = $state('')
 
   let file = $state<File | null>(null)
   let url = $state('')
@@ -117,12 +118,13 @@
         orientation_residual_deg: residual != null ? Math.max(residual, Math.abs(adjust)) : null,
         compass_accuracy_deg: accuracy,
         pano_data: meta?.panoData,
-      })
+      }, (sent, total) => (progress = ` ${Math.round((sent / total) * 100)} %`))
       push(`/photo/${photo.id}`)
     } catch (err) {
       error = `No se pudo subir: ${(err as Error).message}`
     } finally {
       busy = false
+      progress = ''
     }
   }
 
@@ -245,7 +247,7 @@
       {/if}
       <div class="row end">
         <button type="button" onclick={() => (step = 'orient')}>Atrás</button>
-        <button type="button" class="primary" disabled={busy} onclick={submit}>{busy ? 'Subiendo…' : 'Publicar'}</button>
+        <button type="button" class="primary" disabled={busy} onclick={submit}>{busy ? `Subiendo…${progress}` : 'Publicar'}</button>
       </div>
     {/if}
   </main>

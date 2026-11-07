@@ -1,11 +1,14 @@
 import json
 import os
+import re
+import shutil
+import time
 import tempfile
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from PIL import UnidentifiedImageError
@@ -26,6 +29,18 @@ ALLOW_DELETE = os.environ.get("CRAGSHADE_ALLOW_DELETE") == "1"
 KEEP_ORIGINAL = os.environ.get("CRAGSHADE_KEEP_ORIGINAL") == "1"
 # Tope de espacio de las fotos, por debajo de los 10 GB gratis de R2 (deja sitio a las copias de Litestream).
 QUOTA_BYTES = int(os.environ.get("CRAGSHADE_QUOTA_BYTES", 8 * 1024**3))
+
+
+# Subida por trozos: Traefik corta con 502 las peticiones que tardan más de 60 s (readTimeout por defecto),
+# y 8 MB por una red móvil lenta no caben. Cada trozo es una petición corta y se puede reintentar.
+CHUNK_MAX_BYTES = 4 * 1024 * 1024
+UPLOAD_TTL_SECONDS = 24 * 3600
+
+
+def uploads_dir() -> Path:
+    d = db.DATA_DIR / "uploads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def used_bytes() -> int:
@@ -75,9 +90,47 @@ def get_photo(photo_id: str):
     return to_dict(row)
 
 
+def upload_path(upload_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
+        raise HTTPException(404, "Subida no encontrada")
+    return uploads_dir() / f"{upload_id}.part"
+
+
+@app.post("/api/uploads", status_code=201)
+def start_upload():
+    now = time.time()
+    for old in uploads_dir().glob("*.part"):
+        if now - old.stat().st_mtime > UPLOAD_TTL_SECONDS:
+            old.unlink(missing_ok=True)
+    upload_id = uuid.uuid4().hex
+    upload_path(upload_id).touch()
+    return {"upload_id": upload_id, "chunk_bytes": CHUNK_MAX_BYTES}
+
+
+@app.put("/api/uploads/{upload_id}")
+async def upload_chunk(upload_id: str, request: Request, offset: Annotated[int, Query(ge=0)]):
+    """Añade un trozo en `offset`. Reintentar el mismo trozo es seguro: se trunca al offset antes de escribir."""
+    path = upload_path(upload_id)
+    if not path.exists():
+        raise HTTPException(404, "Subida no encontrada")
+    size = path.stat().st_size
+    if offset > size:
+        raise HTTPException(409, f"Falta un trozo: el servidor tiene {size} bytes")
+    written = offset
+    with path.open("r+b") as f:
+        f.truncate(offset)
+        f.seek(offset)
+        async for chunk in request.stream():
+            written += len(chunk)
+            if written - offset > CHUNK_MAX_BYTES or written > MAX_UPLOAD_BYTES:
+                f.truncate(offset)
+                raise HTTPException(413, "Trozo demasiado grande")
+            f.write(chunk)
+    return {"size": written}
+
+
 @app.post("/api/photos", status_code=201)
 def create_photo(
-    image: Annotated[UploadFile, File()],
     alias: Annotated[str, Form(min_length=1, max_length=40)],
     wall_name: Annotated[str, Form(min_length=1, max_length=80)],
     lat: Annotated[float, Form(ge=-90, le=90)],
@@ -90,7 +143,11 @@ def create_photo(
     orientation_residual_deg: Annotated[float | None, Form()] = None,
     compass_accuracy_deg: Annotated[float | None, Form()] = None,
     pano_data: Annotated[str | None, Form()] = None,
+    image: Annotated[UploadFile | None, File()] = None,
+    upload_id: Annotated[str | None, Form()] = None,
 ):
+    if image is None and not upload_id:
+        raise HTTPException(422, "Falta la imagen (image o upload_id)")
     if pano_data:
         try:
             json.loads(pano_data)
@@ -108,13 +165,19 @@ def create_photo(
     }
     with tempfile.TemporaryDirectory(prefix="cragshade-") as tmp:
         orig, web, thumb = Path(tmp, "original.jpg"), Path(tmp, "web.jpg"), Path(tmp, "thumb.jpg")
-        size = 0
-        with orig.open("wb") as f:
-            while chunk := image.file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, f"La foto supera {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
-                f.write(chunk)
+        if upload_id:
+            part = upload_path(upload_id)
+            if not part.exists():
+                raise HTTPException(404, "Subida no encontrada")
+            shutil.move(part, orig)
+        else:
+            size = 0
+            with orig.open("wb") as f:
+                while chunk := image.file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, f"La foto supera {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+                    f.write(chunk)
         try:
             width, height = make_derivatives(orig, web, thumb)
         except (UnidentifiedImageError, OSError):

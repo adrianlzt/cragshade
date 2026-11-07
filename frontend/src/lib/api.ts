@@ -63,13 +63,51 @@ export async function getPhoto(id: string): Promise<Photo> {
   return check(await fetch(`/api/photos/${encodeURIComponent(id)}`))
 }
 
-export async function createPhoto(p: NewPhoto): Promise<Photo> {
+const CHUNK_BYTES = 1024 * 1024
+const RETRIES = 6
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// Reintenta solo si la petición no llegó a completarse (red caída o cortada: fetch lanza TypeError);
+// un error HTTP del servidor es definitivo.
+export async function withRetry<T>(fn: () => Promise<T>, retries = RETRIES, delayMs = 1000): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (!(err instanceof TypeError) || attempt >= retries) {
+        if (err instanceof TypeError) {
+          throw new Error('Se cortó la conexión al subir la foto. Comprueba la cobertura y vuelve a intentarlo.')
+        }
+        throw err
+      }
+      await sleep(delayMs * 2 ** Math.min(attempt, 4))
+    }
+  }
+}
+
+// Una sola petición con 8 MB tarda más de 60 s en una red móvil lenta y Traefik la corta (502 o
+// "Failed to fetch"); por eso se sube por trozos pequeños, cada uno reintentable, y luego se crea la foto.
+export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void): Promise<string> {
+  const { upload_id } = await withRetry(async () => check<{ upload_id: string }>(await fetch('/api/uploads', { method: 'POST' })))
+  for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
+    const chunk = file.slice(offset, offset + CHUNK_BYTES)
+    await withRetry(async () =>
+      check(await fetch(`/api/uploads/${upload_id}?offset=${offset}`, { method: 'PUT', body: chunk })),
+    )
+    onProgress?.(Math.min(offset + CHUNK_BYTES, file.size), file.size)
+  }
+  return upload_id
+}
+
+export async function createPhoto(p: NewPhoto, onProgress?: (sent: number, total: number) => void): Promise<Photo> {
   const form = new FormData()
   for (const [k, v] of Object.entries(p)) {
     if (v == null) continue
-    if (k === 'image') form.append(k, v as File)
+    if (k === 'image') continue
     else if (k === 'pano_data') form.append(k, JSON.stringify(v))
     else form.append(k, String(v))
   }
-  return check(await fetch('/api/photos', { method: 'POST', body: form }))
+  form.append('upload_id', await uploadFile(p.image, onProgress))
+  return withRetry(async () => check(await fetch('/api/photos', { method: 'POST', body: form })))
 }
