@@ -1,34 +1,45 @@
-import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { withRetry } from './api.ts'
+import { describe, expect, it } from 'vitest'
+import { withRetry } from './api'
 
-test('reintenta tras un corte de red y acaba bien', async () => {
-  let calls = 0
-  const out = await withRetry(async () => {
-    if (++calls < 3) throw new TypeError('Failed to fetch')
-    return 'ok'
-  }, 5, 1)
-  assert.equal(out, 'ok')
-  assert.equal(calls, 3)
-})
+describe('withRetry', () => {
+  it('reintenta tras un corte de red y acaba bien', async () => {
+    let calls = 0
+    const out = await withRetry(
+      async () => {
+        if (++calls < 3) throw new TypeError('Failed to fetch')
+        return 'ok'
+      },
+      5,
+      1,
+    )
+    expect(out).toBe('ok')
+    expect(calls).toBe(3)
+  })
 
-test('no reintenta errores HTTP del servidor', async () => {
-  let calls = 0
-  await assert.rejects(
-    withRetry(async () => {
-      calls++
-      throw new Error('422 imagen no válida')
-    }, 5, 1),
-    /422/,
-  )
-  assert.equal(calls, 1)
-})
+  it('no reintenta errores HTTP del servidor', async () => {
+    let calls = 0
+    await expect(
+      withRetry(
+        async () => {
+          calls++
+          throw new Error('422 imagen no válida')
+        },
+        5,
+        1,
+      ),
+    ).rejects.toThrow(/422/)
+    expect(calls).toBe(1)
+  })
 
-test('tras agotar reintentos da un mensaje claro', async () => {
-  await assert.rejects(
-    withRetry(async () => {
-      throw new TypeError('Failed to fetch')
-    }, 2, 1),
-    /Se cortó la conexión/,
-  )
+  it('tras agotar reintentos da un mensaje claro', async () => {
+    await expect(
+      withRetry(
+        async () => {
+          throw new TypeError('Failed to fetch')
+        },
+        2,
+        1,
+      ),
+    ).rejects.toThrow(/Se cortó la conexión/)
+  })
 })
