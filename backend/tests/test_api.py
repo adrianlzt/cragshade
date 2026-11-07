@@ -78,3 +78,27 @@ def test_quota(client, monkeypatch):
     assert used > 0
     monkeypatch.setattr(main, "QUOTA_BYTES", used)
     assert upload(client, jpeg(2000, 1000)).status_code == 507
+
+
+def test_make_derivatives_peak_memory(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    src, web, thumb = tmp_path / "o.jpg", tmp_path / "w.jpg", tmp_path / "t.jpg"
+    Image.new("RGB", (9000, 4500), (90, 120, 200)).save(src, "JPEG")
+    code = (
+        "import resource,sys\n"
+        "from pathlib import Path\n"
+        "from app.images import make_derivatives\n"
+        "base=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "make_derivatives(*map(Path,sys.argv[1:]))\n"
+        "print((resource.getrusage(resource.RUSAGE_SELF).ru_maxrss-base)//1024)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(src), str(web), str(thumb)],
+        capture_output=True, text=True, check=True, cwd=Path(__file__).parents[1],
+    )
+    # 9000x4500 RGB = 121 MB por copia: con dos o más copias completas superaría los 230 MB.
+    assert int(out.stdout) < 200
+    assert web.exists() and thumb.exists()

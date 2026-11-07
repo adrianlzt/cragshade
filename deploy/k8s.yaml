@@ -123,8 +123,8 @@ spec:
               cpu: 20m
               memory: 96Mi
             limits:
-              # Pillow descomprime panorámicas grandes en memoria.
-              memory: 768Mi
+              # Pillow descomprime panorámicas grandes en memoria (OOMKilled con 768Mi el 7/11/2026).
+              memory: 1536Mi
       volumes:
         - name: litestream
           configMap:
